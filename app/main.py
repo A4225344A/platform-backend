@@ -4,17 +4,17 @@ import os
 import time
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Gauge, generate_latest
 from psycopg.types.json import Jsonb
 
 from .db import REQUIRED_TABLES, create_pool
 from .errors import AppError
-from .models import ApprovalCreate, Counters, IncidentDetail, NeedYou, Overview, ScorecardLatest
+from .models import ApprovalCreate, ApprovalList, Counters, IncidentDetail, NeedYou, Overview, ScorecardLatest
 from .validation import validate_action
 
 SCORECARD_LAST_EVAL = Gauge(
@@ -201,7 +201,7 @@ async def overview_data(pool: Any) -> dict[str, Any]:
         cursor = await connection.execute(
             """SELECT id, kind, service, action,
                  greatest(0, extract(epoch FROM (now()-requested_at)))::int AS waiting_seconds,
-                 CASE WHEN kind='policy_change' THEN '/settings/log-sink'
+                 CASE WHEN kind='policy_change' THEN '/approvals'
                       ELSE '/incidents/' || incident_id END AS href
                FROM approvals WHERE status='pending' AND expires_at >= now()
                ORDER BY requested_at"""
@@ -296,6 +296,37 @@ async def latest_scorecard_data(scorecard_id: str, pool: Any) -> dict[str, Any]:
 @app.get("/api/v1/scorecards/{scorecard_id}/latest", response_model=ScorecardLatest)
 async def latest_scorecard(scorecard_id: str, pool: Any = Depends(pool_from_request)) -> ScorecardLatest:
     return ScorecardLatest(**await latest_scorecard_data(scorecard_id, pool))
+
+
+async def approval_list_data(approval_status: str, pool: Any, limit: int = 50) -> dict[str, Any]:
+    allowed_statuses = {"pending", "approved", "rejected", "expired", "all"}
+    if approval_status not in allowed_statuses:
+        raise HTTPException(status_code=400, detail="unsupported approval status")
+
+    async with pool.connection() as connection:
+        cursor = await connection.execute(
+            """SELECT id, kind, service, action, payload, incident_id, trace_id, status,
+                    pr_number, pr_url, base_commit_sha, requested_by, requested_at, expires_at,
+                    decided_by, decided_at, decision_note,
+                    greatest(0, extract(epoch FROM (now()-requested_at)))::int AS waiting_seconds
+               FROM approvals
+               WHERE (%s='all' OR status=%s)
+                 AND (%s!='pending' OR expires_at >= now())
+               ORDER BY requested_at DESC
+               LIMIT %s""",
+            (approval_status, approval_status, approval_status, limit),
+        )
+        rows = await cursor.fetchall()
+    return {"status": approval_status, "approvals": [dict(row) for row in rows]}
+
+
+@app.get("/api/v1/approvals", response_model=ApprovalList)
+async def list_approvals(
+    approval_status: Literal["pending", "approved", "rejected", "expired", "all"] = Query("pending", alias="status"),
+    limit: int = Query(50, ge=1, le=100),
+    pool: Any = Depends(pool_from_request),
+) -> ApprovalList:
+    return ApprovalList(**await approval_list_data(approval_status, pool, limit))
 
 
 @app.get("/api/v1/incidents/{incident_id}", response_model=IncidentDetail)

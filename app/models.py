@@ -15,6 +15,32 @@ class ApprovalCreate(BaseModel):
     payload: LogSinkApproval
 
 
+class ApprovalRead(BaseModel):
+    id: int
+    kind: str
+    service: str | None
+    action: str | None
+    payload: dict[str, Any]
+    incident_id: int | None
+    trace_id: str | None
+    status: str
+    pr_number: int | None
+    pr_url: str | None
+    base_commit_sha: str | None
+    requested_by: str
+    requested_at: datetime
+    expires_at: datetime
+    decided_by: str | None
+    decided_at: datetime | None
+    decision_note: str | None
+    waiting_seconds: int
+
+
+class ApprovalList(BaseModel):
+    status: str
+    approvals: list[ApprovalRead]
+
+
 class TimelineItem(BaseModel):
     at: datetime
     step: str
