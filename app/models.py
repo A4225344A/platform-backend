@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class LogSinkApproval(BaseModel):
@@ -46,6 +46,32 @@ class ApprovalDecision(BaseModel):
     decided_by: str = Field(min_length=1, max_length=120)
     decision_note: str = Field(min_length=1, max_length=1000)
     base_commit_sha: str | None = Field(default=None, max_length=80)
+
+
+class SecretRotationAuditCreate(BaseModel):
+    sha256: str = Field(min_length=64, max_length=64)
+    actor: str = Field(min_length=1, max_length=120)
+    secret_ref: str = Field(default="default/platform-secrets", min_length=1, max_length=200)
+    key: str = Field(min_length=1, max_length=120)
+    storage: Literal["kubernetes-secret"] = "kubernetes-secret"
+    purpose: str = Field(min_length=1, max_length=240)
+
+    @field_validator("sha256")
+    @classmethod
+    def sha256_must_be_hex(cls, value: str) -> str:
+        lowered = value.lower()
+        if len(lowered) != 64 or any(char not in "0123456789abcdef" for char in lowered):
+            raise ValueError("sha256 must be 64 lowercase hex characters")
+        return lowered
+
+
+class AuditLogRead(BaseModel):
+    id: int
+    at: datetime
+    actor: str
+    verb: str
+    object: str
+    after: dict[str, Any] | None
 
 
 class TimelineItem(BaseModel):

@@ -24,6 +24,8 @@ from .models import (
     NeedYou,
     Overview,
     ScorecardLatest,
+    SecretRotationAuditCreate,
+    AuditLogRead,
 )
 from .validation import validate_action
 
@@ -421,6 +423,39 @@ async def decide_approval(
     pool: Any = Depends(pool_from_request),
 ) -> ApprovalRead:
     return ApprovalRead(**await decide_approval_data(approval_id, decision, pool))
+
+
+async def record_secret_rotation_audit_data(payload: SecretRotationAuditCreate, pool: Any) -> dict[str, Any]:
+    object_name = f"{payload.secret_ref}/{payload.key}"
+    after = {
+        "sha256": payload.sha256,
+        "secret_ref": payload.secret_ref,
+        "key": payload.key,
+        "storage": payload.storage,
+        "purpose": payload.purpose,
+    }
+    async with pool.connection() as connection, connection.transaction():
+        cursor = await connection.execute(
+            """INSERT INTO audit_log (actor, verb, object, after)
+               VALUES (%s, %s, %s, %s)
+               RETURNING id, at, actor, verb, object, after""",
+            (payload.actor, "secret.rotate", object_name, Jsonb(after)),
+        )
+        row = await cursor.fetchone()
+    return dict(row)
+
+
+@app.post(
+    "/api/v1/audit-log/secret-rotation",
+    response_model=AuditLogRead,
+    dependencies=[Depends(require_decision_token)],
+    status_code=201,
+)
+async def record_secret_rotation_audit(
+    payload: SecretRotationAuditCreate,
+    pool: Any = Depends(pool_from_request),
+) -> AuditLogRead:
+    return AuditLogRead(**await record_secret_rotation_audit_data(payload, pool))
 
 
 @app.get("/api/v1/incidents/{incident_id}", response_model=IncidentDetail)

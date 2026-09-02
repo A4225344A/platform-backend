@@ -3,9 +3,10 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
-from app.main import approval_list_data, decide_approval_data, require_decision_token
-from app.models import ApprovalDecision
+from app.main import approval_list_data, decide_approval_data, record_secret_rotation_audit_data, require_decision_token
+from app.models import ApprovalDecision, SecretRotationAuditCreate
 
 
 class FakeCursor:
@@ -178,3 +179,55 @@ def test_decision_token_requires_dedicated_secret(monkeypatch) -> None:
     assert wrong.value.status_code == 401
 
     require_decision_token("Bearer decision-secret")
+
+
+def test_secret_rotation_audit_records_only_sha256_metadata() -> None:
+    at = datetime(2026, 9, 3, 3, 0, tzinfo=timezone.utc)
+    sha = "A" * 64
+    row = {
+        "id": 10,
+        "at": at,
+        "actor": "operator",
+        "verb": "secret.rotate",
+        "object": "default/platform-secrets/engops-decision-token",
+        "after": {
+            "sha256": sha.lower(),
+            "secret_ref": "default/platform-secrets",
+            "key": "engops-decision-token",
+            "storage": "kubernetes-secret",
+            "purpose": "engops approval decision endpoint",
+        },
+    }
+    connection = FakeConnection([FakeCursor(row=row)])
+
+    result = asyncio.run(
+        record_secret_rotation_audit_data(
+            SecretRotationAuditCreate(
+                sha256=sha,
+                actor="operator",
+                key="engops-decision-token",
+                purpose="engops approval decision endpoint",
+            ),
+            FakePool(connection),
+        )
+    )
+
+    assert result == row
+    assert connection.calls[0][1][0:3] == (
+        "operator",
+        "secret.rotate",
+        "default/platform-secrets/engops-decision-token",
+    )
+    after = connection.calls[0][1][3].obj
+    assert after == row["after"]
+    assert "token" not in after
+
+
+def test_secret_rotation_audit_rejects_non_hash_input() -> None:
+    with pytest.raises(ValidationError):
+        SecretRotationAuditCreate(
+            sha256="not-a-token-or-hash",
+            actor="operator",
+            key="engops-decision-token",
+            purpose="engops approval decision endpoint",
+        )
