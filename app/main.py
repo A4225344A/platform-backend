@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Gauge, generate_latest
 from psycopg.types.json import Jsonb
 
@@ -60,6 +61,37 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="EngOps API", version="0.1.0", lifespan=lifespan)
 
 
+ORIGIN_VERIFY_HEADER = "x-engops-origin-verify"
+
+
+def bearer_token_matches(authorization: str | None, expected: str | None) -> bool:
+    if not expected:
+        return False
+    scheme, _, supplied = (authorization or "").partition(" ")
+    return scheme.lower() == "bearer" and hmac.compare_digest(supplied, expected)
+
+
+def api_boundary_authorized(origin_header: str | None, authorization: str | None) -> bool:
+    expected_origin = os.environ.get("ENGOPS_API_ORIGIN_VERIFY_TOKEN")
+    if not expected_origin:
+        return True
+    if origin_header and hmac.compare_digest(origin_header, expected_origin):
+        return True
+    return bearer_token_matches(authorization, os.environ.get("ENGOPS_API_TOKEN"))
+
+
+@app.middleware("http")
+async def enforce_api_origin_boundary(request: Request, call_next: Any) -> Response:
+    is_api_request = request.url.path == "/api" or request.url.path.startswith("/api/")
+    is_authorized = api_boundary_authorized(
+        request.headers.get(ORIGIN_VERIFY_HEADER),
+        request.headers.get("authorization"),
+    )
+    if is_api_request and not is_authorized:
+        return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"detail": "forbidden"})
+    return await call_next(request)
+
+
 def pool_from_request(request: Request) -> Any:
     return request.app.state.db_pool
 
@@ -68,8 +100,7 @@ def require_machine_token(authorization: str | None = Header(default=None)) -> N
     expected = os.environ.get("ENGOPS_API_TOKEN")
     if not expected:
         raise HTTPException(status_code=503, detail="ENGOPS_API_TOKEN 尚未設定")
-    scheme, _, supplied = (authorization or "").partition(" ")
-    if scheme.lower() != "bearer" or not hmac.compare_digest(supplied, expected):
+    if not bearer_token_matches(authorization, expected):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未授權")
 
 
