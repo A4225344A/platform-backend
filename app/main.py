@@ -14,7 +14,17 @@ from psycopg.types.json import Jsonb
 
 from .db import REQUIRED_TABLES, create_pool
 from .errors import AppError
-from .models import ApprovalCreate, ApprovalList, Counters, IncidentDetail, NeedYou, Overview, ScorecardLatest
+from .models import (
+    ApprovalCreate,
+    ApprovalDecision,
+    ApprovalList,
+    ApprovalRead,
+    Counters,
+    IncidentDetail,
+    NeedYou,
+    Overview,
+    ScorecardLatest,
+)
 from .validation import validate_action
 
 SCORECARD_LAST_EVAL = Gauge(
@@ -102,6 +112,14 @@ def require_machine_token(authorization: str | None = Header(default=None)) -> N
         raise HTTPException(status_code=503, detail="ENGOPS_API_TOKEN 尚未設定")
     if not bearer_token_matches(authorization, expected):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未授權")
+
+
+def require_decision_token(authorization: str | None = Header(default=None)) -> None:
+    expected = os.environ.get("ENGOPS_DECISION_TOKEN")
+    if not expected:
+        raise HTTPException(status_code=503, detail="ENGOPS_DECISION_TOKEN not configured")
+    if not bearer_token_matches(authorization, expected):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
 
 
 @app.get("/healthz")
@@ -327,6 +345,82 @@ async def list_approvals(
     pool: Any = Depends(pool_from_request),
 ) -> ApprovalList:
     return ApprovalList(**await approval_list_data(approval_status, pool, limit))
+
+
+def approval_audit_snapshot(row: dict[str, Any]) -> dict[str, Any]:
+    snapshot = dict(row)
+    for key, value in list(snapshot.items()):
+        if isinstance(value, datetime):
+            snapshot[key] = value.isoformat()
+    return snapshot
+
+
+async def decide_approval_data(approval_id: int, decision: ApprovalDecision, pool: Any) -> dict[str, Any]:
+    verb = "approval.approve" if decision.decision == "approved" else "approval.reject"
+    async with pool.connection() as connection, connection.transaction():
+        cursor = await connection.execute(
+            """SELECT id, kind, service, action, payload, incident_id, trace_id, status,
+                    pr_number, pr_url, base_commit_sha, requested_by, requested_at, expires_at,
+                    decided_by, decided_at, decision_note,
+                    greatest(0, extract(epoch FROM (now()-requested_at)))::int AS waiting_seconds
+               FROM approvals WHERE id=%s
+               FOR UPDATE""",
+            (approval_id,),
+        )
+        before = await cursor.fetchone()
+        if before is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        if before["status"] != "pending":
+            raise HTTPException(status_code=409, detail="approval is already decided")
+        if before["expires_at"] < datetime.now(timezone.utc):
+            raise HTTPException(status_code=409, detail="approval is expired")
+
+        cursor = await connection.execute(
+            """UPDATE approvals
+               SET status=%s,
+                   decided_by=%s,
+                   decided_at=now(),
+                   decision_note=%s,
+                   base_commit_sha=COALESCE(%s, base_commit_sha)
+               WHERE id=%s
+               RETURNING id, kind, service, action, payload, incident_id, trace_id, status,
+                         pr_number, pr_url, base_commit_sha, requested_by, requested_at, expires_at,
+                         decided_by, decided_at, decision_note,
+                         greatest(0, extract(epoch FROM (now()-requested_at)))::int AS waiting_seconds""",
+            (
+                decision.decision,
+                decision.decided_by,
+                decision.decision_note,
+                decision.base_commit_sha,
+                approval_id,
+            ),
+        )
+        after = await cursor.fetchone()
+        await connection.execute(
+            "INSERT INTO audit_log (actor, verb, object, before, after, trace_id) VALUES (%s,%s,%s,%s,%s,%s)",
+            (
+                decision.decided_by,
+                verb,
+                str(approval_id),
+                Jsonb(approval_audit_snapshot(before)),
+                Jsonb(approval_audit_snapshot(after)),
+                after["trace_id"],
+            ),
+        )
+    return dict(after)
+
+
+@app.post(
+    "/api/v1/approvals/{approval_id}/decision",
+    response_model=ApprovalRead,
+    dependencies=[Depends(require_decision_token)],
+)
+async def decide_approval(
+    approval_id: int,
+    decision: ApprovalDecision,
+    pool: Any = Depends(pool_from_request),
+) -> ApprovalRead:
+    return ApprovalRead(**await decide_approval_data(approval_id, decision, pool))
 
 
 @app.get("/api/v1/incidents/{incident_id}", response_model=IncidentDetail)

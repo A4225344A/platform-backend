@@ -41,6 +41,13 @@ class ApprovalList(BaseModel):
     approvals: list[ApprovalRead]
 
 
+class ApprovalDecision(BaseModel):
+    decision: Literal["approved", "rejected"]
+    decided_by: str = Field(min_length=1, max_length=120)
+    decision_note: str = Field(min_length=1, max_length=1000)
+    base_commit_sha: str | None = Field(default=None, max_length=80)
+
+
 class TimelineItem(BaseModel):
     at: datetime
     step: str
