@@ -14,7 +14,7 @@ from psycopg.types.json import Jsonb
 
 from .db import REQUIRED_TABLES, create_pool
 from .errors import AppError
-from .models import ApprovalCreate, Counters, IncidentDetail, NeedYou, Overview
+from .models import ApprovalCreate, Counters, IncidentDetail, NeedYou, Overview, ScorecardLatest
 from .validation import validate_action
 
 SCORECARD_LAST_EVAL = Gauge(
@@ -250,6 +250,52 @@ async def overview_data(pool: Any) -> dict[str, Any]:
 @app.get("/api/v1/overview", response_model=Overview)
 async def overview(pool: Any = Depends(pool_from_request)) -> Overview:
     return Overview(**await overview_data(pool))
+
+
+async def latest_scorecard_data(scorecard_id: str, pool: Any) -> dict[str, Any]:
+    async with pool.connection() as connection:
+        cursor = await connection.execute("SELECT id, name FROM scorecards WHERE id=%s", (scorecard_id,))
+        scorecard = await cursor.fetchone()
+        if scorecard is None:
+            raise HTTPException(status_code=404, detail="scorecard not found")
+
+        cursor = await connection.execute(
+            """SELECT service, evaluated_at, checks, passed, total
+               FROM scorecard_results
+               WHERE scorecard_id=%s
+                 AND evaluated_at=(SELECT max(evaluated_at) FROM scorecard_results WHERE scorecard_id=%s)
+               ORDER BY service""",
+            (scorecard_id, scorecard_id),
+        )
+        rows = await cursor.fetchall()
+
+    services = [
+        {
+            "service": row["service"],
+            "checks": row["checks"],
+            "passed": row["passed"],
+            "total": row["total"],
+        }
+        for row in rows
+    ]
+    passed = sum(row["passed"] for row in rows)
+    total = sum(row["total"] for row in rows)
+    return {
+        "scorecard_id": scorecard["id"],
+        "name": scorecard["name"],
+        "evaluated_at": rows[0]["evaluated_at"] if rows else None,
+        "services": services,
+        "totals": {
+            "passed": passed,
+            "total": total,
+            "percent": round((passed / total) * 100) if total else None,
+        },
+    }
+
+
+@app.get("/api/v1/scorecards/{scorecard_id}/latest", response_model=ScorecardLatest)
+async def latest_scorecard(scorecard_id: str, pool: Any = Depends(pool_from_request)) -> ScorecardLatest:
+    return ScorecardLatest(**await latest_scorecard_data(scorecard_id, pool))
 
 
 @app.get("/api/v1/incidents/{incident_id}", response_model=IncidentDetail)

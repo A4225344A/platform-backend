@@ -56,3 +56,24 @@ class Overview(BaseModel):
     counters: Counters
     needs_you: list[NeedYou]
     recent: list[dict[str, Any]]
+
+
+class ScorecardServiceResult(BaseModel):
+    service: str
+    checks: dict[str, Any]
+    passed: int
+    total: int
+
+
+class ScorecardTotals(BaseModel):
+    passed: int
+    total: int
+    percent: int | None
+
+
+class ScorecardLatest(BaseModel):
+    scorecard_id: str
+    name: str
+    evaluated_at: datetime | None
+    services: list[ScorecardServiceResult]
+    totals: ScorecardTotals
