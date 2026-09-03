@@ -27,6 +27,7 @@ from .models import (
     NeedYou,
     Overview,
     ScorecardLatest,
+    SearchResults,
     SecretRotationAuditCreate,
     AuditLogRead,
 )
@@ -168,7 +169,7 @@ async def metrics(request: Request) -> Response:
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-async def prometheus_l0_estimate(pool: Any) -> int:
+async def prometheus_l0_estimate(pool: Any, window_hours: int) -> int:
     prom_url = os.environ.get("PROM_URL")
     if not prom_url:
         return 0
@@ -177,7 +178,8 @@ async def prometheus_l0_estimate(pool: Any) -> int:
         services = [row["service"] for row in await cursor.fetchall()]
         cursor = await connection.execute(
             "SELECT count(*) AS n FROM incidents i JOIN service_catalog c ON c.service=i.service "
-            "WHERE i.created_at >= now() - interval '24 hours'"
+            "WHERE i.created_at >= now() - (%s || ' hours')::interval",
+            (window_hours,),
         )
         catalog_alerts = (await cursor.fetchone())["n"]
     if not services:
@@ -186,7 +188,7 @@ async def prometheus_l0_estimate(pool: Any) -> int:
     regex = "|".join(service.replace("\\", "\\\\").replace(".", "\\.") for service in services)
     query = (
         'sum(increase(kube_pod_container_status_restarts_total{namespace="default",'
-        f'pod=~"({regex})-.*"}}[24h]))'
+        f'pod=~"({regex})-.*"}}[{window_hours}h]))'
     )
     try:
         async with httpx.AsyncClient(timeout=5) as client:
@@ -199,11 +201,11 @@ async def prometheus_l0_estimate(pool: Any) -> int:
         return 0
 
 
-async def overview_data(pool: Any) -> dict[str, Any]:
+async def overview_data(pool: Any, window_hours: int = 24) -> dict[str, Any]:
     async with pool.connection() as connection:
         cursor = await connection.execute(
             """WITH recent_incidents AS (
-                 SELECT id, status FROM incidents WHERE created_at >= now() - interval '24 hours'
+                 SELECT id, status FROM incidents WHERE created_at >= now() - (%s || ' hours')::interval
                ), diagnosed AS (
                  SELECT count(DISTINCT s.incident_id) AS n FROM incident_steps s
                  JOIN recent_incidents i ON i.id=s.incident_id WHERE s.step='judged'
@@ -212,13 +214,14 @@ async def overview_data(pool: Any) -> dict[str, Any]:
                    count(*) FILTER (WHERE action='notify_only') AS notify_only,
                    count(*) FILTER (WHERE action IN ('restart','scale') AND verified IS TRUE) AS verified,
                    count(*) FILTER (WHERE action IN ('restart','scale') AND verified IS FALSE) AS verify_failed
-                 FROM remediation_log WHERE created_at >= now() - interval '24 hours'
+                 FROM remediation_log WHERE created_at >= now() - (%s || ' hours')::interval
                )
                SELECT (SELECT count(*) FROM recent_incidents) AS alerts,
                  (SELECT n FROM diagnosed) AS ai_diagnosed, rem.auto_remediated, rem.notify_only,
                  rem.verified, rem.verify_failed,
                  (SELECT count(*) FROM recent_incidents WHERE status='skipped_cooldown') AS skipped_cooldown
-               FROM rem"""
+               FROM rem""",
+            (window_hours, window_hours),
         )
         counters_row = await cursor.fetchone()
         cursor = await connection.execute(
@@ -241,7 +244,8 @@ async def overview_data(pool: Any) -> dict[str, Any]:
         cursor = await connection.execute(
             """SELECT DISTINCT i.service FROM incidents i
                LEFT JOIN service_catalog c ON c.service=i.service
-               WHERE c.service IS NULL AND i.created_at >= now() - interval '24 hours'"""
+               WHERE c.service IS NULL AND i.created_at >= now() - (%s || ' hours')::interval""",
+            (window_hours,),
         )
         catalog_gaps = await cursor.fetchall()
         cursor = await connection.execute(
@@ -261,9 +265,10 @@ async def overview_data(pool: Any) -> dict[str, Any]:
                 waiting_seconds=None, href=None)
         for row in catalog_gaps
     )
-    counters = Counters(l0_absorbed=await prometheus_l0_estimate(pool), **counters_row)
+    counters = Counters(l0_absorbed=await prometheus_l0_estimate(pool, window_hours), **counters_row)
     return {
         "counters_computed_at": datetime.now(timezone.utc),
+        "window_hours": window_hours,
         "counters": counters,
         "needs_you": needs,
         "recent": [dict(row) for row in recent],
@@ -271,8 +276,49 @@ async def overview_data(pool: Any) -> dict[str, Any]:
 
 
 @app.get("/api/v1/overview", response_model=Overview)
-async def overview(pool: Any = Depends(pool_from_request)) -> Overview:
-    return Overview(**await overview_data(pool))
+async def overview(
+    window_hours: int = Query(24, ge=1, le=168),
+    pool: Any = Depends(pool_from_request),
+) -> Overview:
+    return Overview(**await overview_data(pool, window_hours))
+
+
+async def search_data(query: str, pool: Any, limit: int = 8) -> dict[str, Any]:
+    term = query.strip()
+    if len(term) < 2:
+        return {"query": term, "services": [], "incidents": []}
+    like = f"%{term}%"
+    async with pool.connection() as connection:
+        cursor = await connection.execute(
+            """SELECT service, display_name, owner_team, owner_email
+               FROM service_catalog
+               WHERE service ILIKE %s OR display_name ILIKE %s
+                  OR owner_team ILIKE %s OR owner_email ILIKE %s
+               ORDER BY service LIMIT %s""",
+            (like, like, like, like, limit),
+        )
+        services = await cursor.fetchall()
+        cursor = await connection.execute(
+            """SELECT id, service, alertname, status, COALESCE(started_at, created_at) AS started_at
+               FROM incidents
+               WHERE service ILIKE %s OR alertname ILIKE %s
+               ORDER BY created_at DESC LIMIT %s""",
+            (like, like, limit),
+        )
+        incidents = await cursor.fetchall()
+    return {
+        "query": term,
+        "services": [dict(row) for row in services],
+        "incidents": [dict(row) for row in incidents],
+    }
+
+
+@app.get("/api/v1/search", response_model=SearchResults)
+async def search(
+    q: str = Query("", max_length=200),
+    pool: Any = Depends(pool_from_request),
+) -> SearchResults:
+    return SearchResults(**await search_data(q, pool))
 
 
 async def latest_scorecard_data(scorecard_id: str, pool: Any) -> dict[str, Any]:

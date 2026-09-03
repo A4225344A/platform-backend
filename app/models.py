@@ -156,9 +156,31 @@ class NeedYou(BaseModel):
 
 class Overview(BaseModel):
     counters_computed_at: datetime
+    window_hours: int
     counters: Counters
     needs_you: list[NeedYou]
     recent: list[dict[str, Any]]
+
+
+class SearchServiceResult(BaseModel):
+    service: str
+    display_name: str | None
+    owner_team: str | None
+    owner_email: str | None
+
+
+class SearchIncidentResult(BaseModel):
+    id: int
+    service: str
+    alertname: str | None
+    status: str
+    started_at: datetime
+
+
+class SearchResults(BaseModel):
+    query: str
+    services: list[SearchServiceResult]
+    incidents: list[SearchIncidentResult]
 
 
 class ScorecardServiceResult(BaseModel):
