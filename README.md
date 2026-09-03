@@ -14,7 +14,7 @@ py -m venv .venv
 
 唯讀端點：`GET /healthz`、`GET /readyz`、`GET /metrics`、`GET /api/v1/overview`、`GET /api/v1/incidents/{id}`。
 
-`POST /api/v1/scorecards/{id}/evaluate` 需要 `Authorization: Bearer $ENGOPS_API_TOKEN`。`POST /api/v1/approvals` 目前是 private/port-forward Lab 路徑，固定寫入 `requested_by=lab-ui`。
+`POST /api/v1/scorecards/{id}/evaluate` 需要 `Authorization: Bearer $ENGOPS_API_TOKEN`。`POST /api/v1/approvals` 目前是 private/port-forward Lab 路徑；`requested_by` 可由呼叫端傳入（未帶時預設 `lab-ui`），尚未有真正的登入身分驗證，`requested_by`/`decided_by` 目前仍是未經驗證的自由輸入字串。
 
 Kubernetes/K3s 部署檔已分離到 GitOps repository 的 `platform-gitops/apps/engops-api/`，由 ArgoCD 管理；本 repo 只保留應用程式與資料庫 migration。
 

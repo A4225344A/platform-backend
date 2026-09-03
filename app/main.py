@@ -652,13 +652,13 @@ async def create_approval(payload: ApprovalCreate, pool: Any = Depends(pool_from
             cursor = await connection.execute(
                 """INSERT INTO approvals (kind, action, payload, requested_by)
                    VALUES (%s,%s,%s,%s) RETURNING id, kind, action, payload, status, requested_at, expires_at""",
-                (payload.kind, payload.action, Jsonb(payload.payload.model_dump()), "lab-ui"),
+                (payload.kind, payload.action, Jsonb(payload.payload.model_dump()), payload.requested_by),
             )
             row = await cursor.fetchone()
             await connection.execute(
                 "INSERT INTO audit_log (actor,verb,object,after) VALUES (%s,%s,%s,%s)",
                 (
-                    "lab-ui",
+                    payload.requested_by,
                     "approval.create",
                     str(row["id"]),
                     Jsonb({"kind": row["kind"], "action": row["action"], "status": row["status"]}),

@@ -13,6 +13,7 @@ class ApprovalCreate(BaseModel):
     kind: Literal["policy_change"]
     action: Literal["log_sink"]
     payload: LogSinkApproval
+    requested_by: str = Field(default="lab-ui", min_length=1, max_length=120)
 
 
 class ApprovalRead(BaseModel):
