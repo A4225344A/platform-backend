@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 from typing import Any, Literal
 
@@ -49,7 +50,7 @@ class ApprovalDecision(BaseModel):
     base_commit_sha: str | None = Field(default=None, max_length=80)
 
 
-GITOPS_PR_URL_PREFIX = "https://github.com/A4225344A/platform-gitops/pull/"
+GITOPS_PR_URL_PREFIX = f"https://github.com/{os.environ.get('GITOPS_REPO', 'A4225344A/platform-gitops')}/pull/"
 
 
 class ApprovalPrLink(BaseModel):
