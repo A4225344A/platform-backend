@@ -11,10 +11,11 @@ from app.main import (
     audit_log_list_data,
     build_approval_execution_plan,
     decide_approval_data,
+    link_approval_pr_data,
     record_secret_rotation_audit_data,
     require_decision_token,
 )
-from app.models import ApprovalDecision, SecretRotationAuditCreate
+from app.models import ApprovalDecision, ApprovalPrLink, SecretRotationAuditCreate
 
 
 class FakeCursor:
@@ -173,6 +174,93 @@ def test_decide_approval_rejects_terminal_state() -> None:
         )
 
     assert raised.value.status_code == 409
+
+
+def test_link_approval_pr_updates_row_and_writes_audit_log() -> None:
+    requested_at = datetime(2026, 9, 3, 2, 0, tzinfo=timezone.utc)
+    expires_at = requested_at + timedelta(hours=24)
+    before = {
+        "id": 3,
+        "kind": "policy_change",
+        "service": None,
+        "action": "log_sink",
+        "payload": {"sink_type": "file"},
+        "incident_id": None,
+        "trace_id": "trace-3",
+        "status": "approved",
+        "pr_number": None,
+        "pr_url": None,
+        "base_commit_sha": None,
+        "requested_by": "lab-ui",
+        "requested_at": requested_at,
+        "expires_at": expires_at,
+        "decided_by": "operator",
+        "decided_at": requested_at + timedelta(minutes=10),
+        "decision_note": "reviewed",
+        "waiting_seconds": 43,
+    }
+    after = {**before, "pr_number": 42, "pr_url": "https://github.com/A4225344A/platform-gitops/pull/42"}
+    connection = FakeConnection([FakeCursor(row=before), FakeCursor(row=after), FakeCursor()])
+
+    result = asyncio.run(
+        link_approval_pr_data(
+            3,
+            ApprovalPrLink(pr_number=42, pr_url="https://github.com/A4225344A/platform-gitops/pull/42", linked_by="operator"),
+            FakePool(connection),
+        )
+    )
+
+    assert result["pr_number"] == 42
+    assert result["pr_url"] == "https://github.com/A4225344A/platform-gitops/pull/42"
+    assert connection.calls[0][1] == (3,)
+    assert connection.calls[1][1] == (42, "https://github.com/A4225344A/platform-gitops/pull/42", 3)
+    assert connection.calls[2][1][0:3] == ("operator", "approval.link_pr", "3")
+
+
+def test_link_approval_pr_rejects_when_not_yet_approved() -> None:
+    requested_at = datetime(2026, 9, 3, 2, 0, tzinfo=timezone.utc)
+    connection = FakeConnection(
+        [
+            FakeCursor(
+                row={
+                    "id": 3,
+                    "status": "pending",
+                    "expires_at": requested_at + timedelta(hours=24),
+                }
+            )
+        ]
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(
+            link_approval_pr_data(
+                3,
+                ApprovalPrLink(pr_number=42, pr_url="https://github.com/A4225344A/platform-gitops/pull/42", linked_by="operator"),
+                FakePool(connection),
+            )
+        )
+
+    assert raised.value.status_code == 409
+
+
+def test_link_approval_pr_returns_404_when_missing() -> None:
+    connection = FakeConnection([FakeCursor(row=None)])
+
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(
+            link_approval_pr_data(
+                99,
+                ApprovalPrLink(pr_number=1, pr_url="https://github.com/A4225344A/platform-gitops/pull/1", linked_by="operator"),
+                FakePool(connection),
+            )
+        )
+
+    assert raised.value.status_code == 404
+
+
+def test_link_approval_pr_rejects_url_outside_gitops_repo() -> None:
+    with pytest.raises(ValidationError):
+        ApprovalPrLink(pr_number=1, pr_url="https://github.com/someone-else/other-repo/pull/1", linked_by="operator")
 
 
 def test_approval_execution_plan_is_read_only_and_bounded() -> None:

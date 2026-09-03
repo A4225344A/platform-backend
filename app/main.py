@@ -19,6 +19,7 @@ from .models import (
     ApprovalDecision,
     ApprovalExecutionPlan,
     ApprovalList,
+    ApprovalPrLink,
     ApprovalRead,
     AuditLogList,
     Counters,
@@ -425,6 +426,62 @@ async def decide_approval(
     pool: Any = Depends(pool_from_request),
 ) -> ApprovalRead:
     return ApprovalRead(**await decide_approval_data(approval_id, decision, pool))
+
+
+async def link_approval_pr_data(approval_id: int, link: ApprovalPrLink, pool: Any) -> dict[str, Any]:
+    async with pool.connection() as connection, connection.transaction():
+        cursor = await connection.execute(
+            """SELECT id, kind, service, action, payload, incident_id, trace_id, status,
+                    pr_number, pr_url, base_commit_sha, requested_by, requested_at, expires_at,
+                    decided_by, decided_at, decision_note,
+                    greatest(0, extract(epoch FROM (now()-requested_at)))::int AS waiting_seconds
+               FROM approvals WHERE id=%s
+               FOR UPDATE""",
+            (approval_id,),
+        )
+        before = await cursor.fetchone()
+        if before is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        if before["status"] != "approved":
+            raise HTTPException(status_code=409, detail="approval is not approved yet")
+
+        cursor = await connection.execute(
+            """UPDATE approvals
+               SET pr_number=%s,
+                   pr_url=%s
+               WHERE id=%s
+               RETURNING id, kind, service, action, payload, incident_id, trace_id, status,
+                         pr_number, pr_url, base_commit_sha, requested_by, requested_at, expires_at,
+                         decided_by, decided_at, decision_note,
+                         greatest(0, extract(epoch FROM (now()-requested_at)))::int AS waiting_seconds""",
+            (link.pr_number, link.pr_url, approval_id),
+        )
+        after = await cursor.fetchone()
+        await connection.execute(
+            "INSERT INTO audit_log (actor, verb, object, before, after, trace_id) VALUES (%s,%s,%s,%s,%s,%s)",
+            (
+                link.linked_by,
+                "approval.link_pr",
+                str(approval_id),
+                Jsonb(approval_audit_snapshot(before)),
+                Jsonb(approval_audit_snapshot(after)),
+                after["trace_id"],
+            ),
+        )
+    return dict(after)
+
+
+@app.post(
+    "/api/v1/approvals/{approval_id}/link-pr",
+    response_model=ApprovalRead,
+    dependencies=[Depends(require_decision_token)],
+)
+async def link_approval_pr(
+    approval_id: int,
+    link: ApprovalPrLink,
+    pool: Any = Depends(pool_from_request),
+) -> ApprovalRead:
+    return ApprovalRead(**await link_approval_pr_data(approval_id, link, pool))
 
 
 def build_approval_execution_plan(row: dict[str, Any]) -> dict[str, Any]:

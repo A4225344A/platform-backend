@@ -48,6 +48,22 @@ class ApprovalDecision(BaseModel):
     base_commit_sha: str | None = Field(default=None, max_length=80)
 
 
+GITOPS_PR_URL_PREFIX = "https://github.com/A4225344A/platform-gitops/pull/"
+
+
+class ApprovalPrLink(BaseModel):
+    pr_number: int = Field(gt=0)
+    pr_url: str = Field(min_length=1, max_length=500)
+    linked_by: str = Field(min_length=1, max_length=120)
+
+    @field_validator("pr_url")
+    @classmethod
+    def pr_url_must_target_gitops_repo(cls, value: str) -> str:
+        if not value.startswith(GITOPS_PR_URL_PREFIX):
+            raise ValueError(f"pr_url must start with {GITOPS_PR_URL_PREFIX}")
+        return value
+
+
 class ExecutionPlanStep(BaseModel):
     order: int
     name: str
