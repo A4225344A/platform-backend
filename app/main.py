@@ -19,6 +19,7 @@ from .models import (
     ApprovalDecision,
     ApprovalList,
     ApprovalRead,
+    AuditLogList,
     Counters,
     IncidentDetail,
     NeedYou,
@@ -456,6 +457,29 @@ async def record_secret_rotation_audit(
     pool: Any = Depends(pool_from_request),
 ) -> AuditLogRead:
     return AuditLogRead(**await record_secret_rotation_audit_data(payload, pool))
+
+
+async def audit_log_list_data(pool: Any, limit: int = 50, verb: str | None = None) -> dict[str, Any]:
+    async with pool.connection() as connection:
+        cursor = await connection.execute(
+            """SELECT id, at, actor, verb, object, before, after, trace_id
+               FROM audit_log
+               WHERE (%s::text IS NULL OR verb=%s)
+               ORDER BY at DESC
+               LIMIT %s""",
+            (verb, verb, limit),
+        )
+        rows = await cursor.fetchall()
+    return {"audit_log": [dict(row) for row in rows]}
+
+
+@app.get("/api/v1/audit-log", response_model=AuditLogList)
+async def list_audit_log(
+    limit: int = Query(50, ge=1, le=100),
+    verb: str | None = Query(default=None, min_length=1, max_length=120),
+    pool: Any = Depends(pool_from_request),
+) -> AuditLogList:
+    return AuditLogList(**await audit_log_list_data(pool, limit, verb))
 
 
 @app.get("/api/v1/incidents/{incident_id}", response_model=IncidentDetail)

@@ -71,7 +71,13 @@ class AuditLogRead(BaseModel):
     actor: str
     verb: str
     object: str
+    before: dict[str, Any] | None = None
     after: dict[str, Any] | None
+    trace_id: str | None = None
+
+
+class AuditLogList(BaseModel):
+    audit_log: list[AuditLogRead]
 
 
 class TimelineItem(BaseModel):

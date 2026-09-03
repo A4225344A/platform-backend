@@ -5,7 +5,13 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from app.main import approval_list_data, decide_approval_data, record_secret_rotation_audit_data, require_decision_token
+from app.main import (
+    approval_list_data,
+    audit_log_list_data,
+    decide_approval_data,
+    record_secret_rotation_audit_data,
+    require_decision_token,
+)
 from app.models import ApprovalDecision, SecretRotationAuditCreate
 
 
@@ -231,3 +237,23 @@ def test_secret_rotation_audit_rejects_non_hash_input() -> None:
             key="engops-decision-token",
             purpose="engops approval decision endpoint",
         )
+
+
+def test_audit_log_list_returns_recent_rows_with_optional_verb_filter() -> None:
+    at = datetime(2026, 9, 3, 4, 0, tzinfo=timezone.utc)
+    row = {
+        "id": 12,
+        "at": at,
+        "actor": "operator",
+        "verb": "secret.rotate",
+        "object": "default/platform-secrets/engops-decision-token",
+        "before": None,
+        "after": {"sha256": "a" * 64},
+        "trace_id": None,
+    }
+    connection = FakeConnection([FakeCursor(rows=[row])])
+
+    result = asyncio.run(audit_log_list_data(FakePool(connection), limit=10, verb="secret.rotate"))
+
+    assert result == {"audit_log": [row]}
+    assert connection.calls[0][1] == ("secret.rotate", "secret.rotate", 10)
