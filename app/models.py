@@ -48,6 +48,27 @@ class ApprovalDecision(BaseModel):
     base_commit_sha: str | None = Field(default=None, max_length=80)
 
 
+class ExecutionPlanStep(BaseModel):
+    order: int
+    name: str
+    command: str | None = None
+    expected_result: str
+
+
+class ApprovalExecutionPlan(BaseModel):
+    approval_id: int
+    kind: str
+    action: str | None
+    status: str
+    summary: str
+    preconditions: list[str]
+    steps: list[ExecutionPlanStep]
+    retry_limit: int
+    rollback: str
+    requires_human_decision: bool
+    mutation_enabled: bool = False
+
+
 class SecretRotationAuditCreate(BaseModel):
     sha256: str = Field(min_length=64, max_length=64)
     actor: str = Field(min_length=1, max_length=120)

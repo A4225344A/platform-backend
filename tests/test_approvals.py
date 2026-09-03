@@ -7,7 +7,9 @@ from pydantic import ValidationError
 
 from app.main import (
     approval_list_data,
+    approval_execution_plan_data,
     audit_log_list_data,
+    build_approval_execution_plan,
     decide_approval_data,
     record_secret_rotation_audit_data,
     require_decision_token,
@@ -171,6 +173,57 @@ def test_decide_approval_rejects_terminal_state() -> None:
         )
 
     assert raised.value.status_code == 409
+
+
+def test_approval_execution_plan_is_read_only_and_bounded() -> None:
+    row = {
+        "id": 7,
+        "kind": "policy_change",
+        "service": None,
+        "action": "log_sink",
+        "payload": {
+            "sink_type": "cloudwatch",
+            "connection_params": {"region": "ap-northeast-1", "log_group": "/w3/ai-agent"},
+        },
+        "status": "pending",
+    }
+
+    plan = build_approval_execution_plan(row)
+
+    assert plan["approval_id"] == 7
+    assert plan["requires_human_decision"] is True
+    assert plan["mutation_enabled"] is False
+    assert plan["retry_limit"] == 2
+    assert "rollback" in plan["rollback"].lower()
+    assert [step["order"] for step in plan["steps"]] == [1, 2, 3, 4]
+
+
+def test_approval_execution_plan_fetches_approval_row() -> None:
+    row = {
+        "id": 8,
+        "kind": "policy_change",
+        "service": None,
+        "action": "log_sink",
+        "payload": {"sink_type": "file", "connection_params": {"path": "/var/log/otel/ai-agent.log"}},
+        "status": "approved",
+    }
+    connection = FakeConnection([FakeCursor(row=row)])
+
+    plan = asyncio.run(approval_execution_plan_data(8, FakePool(connection)))
+
+    assert plan["approval_id"] == 8
+    assert plan["status"] == "approved"
+    assert plan["mutation_enabled"] is False
+    assert connection.calls[0][1] == (8,)
+
+
+def test_approval_execution_plan_returns_404_when_missing() -> None:
+    connection = FakeConnection([FakeCursor(row=None)])
+
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(approval_execution_plan_data(99, FakePool(connection)))
+
+    assert raised.value.status_code == 404
 
 
 def test_decision_token_requires_dedicated_secret(monkeypatch) -> None:

@@ -17,6 +17,7 @@ from .errors import AppError
 from .models import (
     ApprovalCreate,
     ApprovalDecision,
+    ApprovalExecutionPlan,
     ApprovalList,
     ApprovalRead,
     AuditLogList,
@@ -424,6 +425,82 @@ async def decide_approval(
     pool: Any = Depends(pool_from_request),
 ) -> ApprovalRead:
     return ApprovalRead(**await decide_approval_data(approval_id, decision, pool))
+
+
+def build_approval_execution_plan(row: dict[str, Any]) -> dict[str, Any]:
+    payload = row["payload"] or {}
+    try:
+        validate_action(row["kind"], row["action"], payload)
+    except AppError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    sink_type = payload.get("sink_type")
+    params = payload.get("connection_params") or {}
+    destination = ", ".join(f"{key}={value}" for key, value in sorted(params.items())) or "default destination"
+    return {
+        "approval_id": row["id"],
+        "kind": row["kind"],
+        "action": row["action"],
+        "status": row["status"],
+        "summary": f"Preview policy_change/log_sink to {sink_type} ({destination}).",
+        "preconditions": [
+            "approval status must still be pending",
+            "operator must use the internal decision endpoint with ENGOPS_DECISION_TOKEN",
+            "CloudFront public entry remains read-only and must not allow POST mutation",
+        ],
+        "steps": [
+            {
+                "order": 1,
+                "name": "Create GitOps change",
+                "command": None,
+                "expected_result": "A pull request changes only the log sink manifest or configuration.",
+            },
+            {
+                "order": 2,
+                "name": "Review bounded diff",
+                "command": None,
+                "expected_result": "Reviewer confirms the diff is limited to the approved log sink target.",
+            },
+            {
+                "order": 3,
+                "name": "Merge and sync",
+                "command": "argocd app sync platform-apps",
+                "expected_result": "ArgoCD applies the merged GitOps state.",
+            },
+            {
+                "order": 4,
+                "name": "Verify log route",
+                "command": None,
+                "expected_result": "otel-collector and ai-agent stay ready and logs arrive at the approved sink.",
+            },
+        ],
+        "retry_limit": 2,
+        "rollback": "Revert the GitOps commit or PR, sync platform-apps, and record the rollback in audit_log.",
+        "requires_human_decision": True,
+        "mutation_enabled": False,
+    }
+
+
+async def approval_execution_plan_data(approval_id: int, pool: Any) -> dict[str, Any]:
+    async with pool.connection() as connection:
+        cursor = await connection.execute(
+            """SELECT id, kind, service, action, payload, status
+               FROM approvals
+               WHERE id=%s""",
+            (approval_id,),
+        )
+        row = await cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="approval not found")
+    return build_approval_execution_plan(dict(row))
+
+
+@app.get("/api/v1/approvals/{approval_id}/execution-plan", response_model=ApprovalExecutionPlan)
+async def approval_execution_plan(
+    approval_id: int,
+    pool: Any = Depends(pool_from_request),
+) -> ApprovalExecutionPlan:
+    return ApprovalExecutionPlan(**await approval_execution_plan_data(approval_id, pool))
 
 
 async def record_secret_rotation_audit_data(payload: SecretRotationAuditCreate, pool: Any) -> dict[str, Any]:
