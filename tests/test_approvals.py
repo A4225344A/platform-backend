@@ -96,7 +96,7 @@ def test_approval_list_rejects_unsupported_status() -> None:
 
 
 def test_decide_approval_updates_status_and_writes_audit_log() -> None:
-    requested_at = datetime(2026, 9, 3, 2, 0, tzinfo=timezone.utc)
+    requested_at = datetime.now(timezone.utc) - timedelta(hours=1)
     expires_at = requested_at + timedelta(hours=24)
     before = {
         "id": 1,
