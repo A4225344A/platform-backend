@@ -125,6 +125,14 @@ class TimelineItem(BaseModel):
     detail: Any
 
 
+class AccuracyStats(BaseModel):
+    service: str
+    verified: int
+    failed: int
+    notify_only: int
+    remediation_rate: float | None
+
+
 class IncidentDetail(BaseModel):
     id: int
     service: str

@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime, timezone
 
-from app.main import overview_data, search_data
+from app.main import accuracy_data, overview_data, search_data
 
 
 class FakeCursor:
@@ -145,3 +145,38 @@ def test_overview_data_respects_custom_window_hours(monkeypatch) -> None:
     assert counters_params == (6, 6)
     catalog_gaps_params = connection.calls[3][1]
     assert catalog_gaps_params == (6,)
+
+
+def test_accuracy_data_computes_remediation_rate() -> None:
+    connection = FakeConnection(
+        [
+            FakeCursor(
+                rows=[
+                    {"outcome": "verified", "n": 3},
+                    {"outcome": "failed", "n": 1},
+                    {"outcome": "notify_only", "n": 5},
+                ]
+            ),
+        ]
+    )
+
+    result = asyncio.run(accuracy_data("orders-api", FakePool(connection)))
+
+    assert result == {
+        "service": "orders-api",
+        "verified": 3,
+        "failed": 1,
+        "notify_only": 5,
+        "remediation_rate": 0.75,
+    }
+    assert connection.calls[0][1] == ("orders-api",)
+
+
+def test_accuracy_data_returns_none_rate_without_remediation_attempts() -> None:
+    connection = FakeConnection([FakeCursor(rows=[{"outcome": "notify_only", "n": 2}])])
+
+    result = asyncio.run(accuracy_data("payments-api", FakePool(connection)))
+
+    assert result["remediation_rate"] is None
+    assert result["verified"] == 0
+    assert result["failed"] == 0

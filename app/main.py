@@ -15,6 +15,7 @@ from psycopg.types.json import Jsonb
 from .db import REQUIRED_TABLES, create_pool
 from .errors import AppError
 from .models import (
+    AccuracyStats,
     ApprovalCreate,
     ApprovalDecision,
     ApprovalExecutionPlan,
@@ -319,6 +320,37 @@ async def search(
     pool: Any = Depends(pool_from_request),
 ) -> SearchResults:
     return SearchResults(**await search_data(q, pool))
+
+
+async def accuracy_data(service: str, pool: Any) -> dict[str, Any]:
+    async with pool.connection() as connection:
+        cursor = await connection.execute(
+            """SELECT outcome, count(*) AS n FROM incidents
+               WHERE service = %s AND outcome IN ('verified', 'failed', 'notify_only')
+               GROUP BY outcome""",
+            (service,),
+        )
+        rows = await cursor.fetchall()
+    counts = {row["outcome"]: row["n"] for row in rows}
+    verified = counts.get("verified", 0)
+    failed = counts.get("failed", 0)
+    notify_only = counts.get("notify_only", 0)
+    attempts = verified + failed
+    return {
+        "service": service,
+        "verified": verified,
+        "failed": failed,
+        "notify_only": notify_only,
+        "remediation_rate": round(verified / attempts, 4) if attempts > 0 else None,
+    }
+
+
+@app.get("/api/v1/accuracy", response_model=AccuracyStats)
+async def accuracy(
+    service: str = Query(..., min_length=1, max_length=63),
+    pool: Any = Depends(pool_from_request),
+) -> AccuracyStats:
+    return AccuracyStats(**await accuracy_data(service, pool))
 
 
 async def latest_scorecard_data(scorecard_id: str, pool: Any) -> dict[str, Any]:
