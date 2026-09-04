@@ -203,6 +203,41 @@ async def prometheus_l0_estimate(pool: Any, window_hours: int) -> int:
         return 0
 
 
+async def prometheus_scrape_status(services: list[str]) -> dict[str, bool | None]:
+    """Whether Prometheus currently has a scrape target for each service's Service
+    object (see apps/servicemonitor.yaml, which relabels the target's `service` label
+    to the k8s Service name).
+
+    True: at least one target reports up==1 (being scraped successfully).
+    False: at least one target exists for the service but none report up==1
+      (registered but the scrape itself is failing).
+    None: no target found at all -- PROM_URL isn't configured, the query failed, or
+      nothing is scraping this service yet. We don't guess pass/fail when we don't know.
+    """
+    status: dict[str, bool | None] = {service: None for service in services}
+    prom_url = os.environ.get("PROM_URL")
+    if not prom_url or not services:
+        return status
+    regex = "|".join(service.replace("\\", "\\\\").replace(".", "\\.") for service in services)
+    query = f'up{{namespace="default",service=~"({regex})"}}'
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.get(f"{prom_url.rstrip('/')}/api/v1/query", params={"query": query})
+            response.raise_for_status()
+            results = response.json().get("data", {}).get("result", [])
+    except (httpx.HTTPError, ValueError, KeyError):
+        return status
+    for sample in results:
+        service = sample.get("metric", {}).get("service")
+        if service not in status:
+            continue
+        if sample["value"][1] == "1":
+            status[service] = True
+        elif status[service] is None:
+            status[service] = False
+    return status
+
+
 async def overview_data(pool: Any, window_hours: int = 24) -> dict[str, Any]:
     async with pool.connection() as connection:
         cursor = await connection.execute(
@@ -792,13 +827,17 @@ async def evaluate_scorecard(scorecard_id: str, pool: Any = Depends(pool_from_re
             raise HTTPException(status_code=404, detail="計分卡不存在")
         cursor = await connection.execute("SELECT service FROM service_catalog ORDER BY service")
         services = await cursor.fetchall()
+        scrape_status = await prometheus_scrape_status([row["service"] for row in services])
         evaluated_at = datetime.now(timezone.utc)
         for service in services:
-            checks = {"catalog_entry": True, "metrics_scraped": None}
+            # catalog_entry is definitionally true here: this loop only ever sees
+            # services that already have a service_catalog row.
+            checks = {"catalog_entry": True, "metrics_scraped": scrape_status[service["service"]]}
+            passed = sum(1 for value in checks.values() if value is True)
             await connection.execute(
                 """INSERT INTO scorecard_results (scorecard_id,service,evaluated_at,checks,passed,total)
                    VALUES (%s,%s,%s,%s,%s,%s)""",
-                (scorecard_id, service["service"], evaluated_at, Jsonb(checks), 1, 2),
+                (scorecard_id, service["service"], evaluated_at, Jsonb(checks), passed, len(checks)),
             )
     SCORECARD_LAST_EVAL.set(evaluated_at.timestamp())
     return {"scorecard_id": scorecard_id, "evaluated_at": evaluated_at, "services": len(services)}
