@@ -4,7 +4,7 @@
 
 ## 本機執行
 
-需要 Python 3.12+ 與可用的 PostgreSQL。先套用 `migrations/001_engops.sql`，並設定 `PGHOST`、`PGPORT`、`PGDATABASE`、`PGUSER`、`PGPASSWORD`。
+需要 Python 3.12+ 與可用的 PostgreSQL。先套用 `migrations/001_engops.sql`,並設定 `PGHOST`、`PGPORT`、`PGDATABASE`、`PGUSER`、`PGPASSWORD`。
 
 ```powershell
 py -m venv .venv
@@ -12,14 +12,15 @@ py -m venv .venv
 .venv\Scripts\python -m uvicorn app.main:app --reload
 ```
 
-`requirements.lock` 是從 `requirements.in` 用 pip-tools 產生的雜湊鎖定檔;改依賴版本時改 `requirements.in`,再重新產生:
+`requirements.lock` 是從 `requirements.in` 用 pip-tools 產生的雜湊鎖定檔;改依賴版本時改 `requirements.in`,再重新產生。**務必用 Python 3.12 產生**(跟 `Dockerfile`/CI 的 `python-version: "3.12"` 一致)——曾經誤用本機裝的 Python 3.14 產生過一次,解析出的傳遞依賴（`typing-extensions` 的 `via` 清單)跟 3.12 環境不同,導致 CI 的 `git diff --exit-code requirements.lock` 判定「lock 檔不是最新」而失敗。用錯 Python 版本產生的 lock 檔本機測試會全過,只有在 CI 重新解析比對時才會爆炸,不容易在本機發現:
 
 ```powershell
-.venv\Scripts\python -m pip install --upgrade pip-tools==7.6.1 pip-audit==2.10.1
-.venv\Scripts\python -m piptools compile --generate-hashes --strip-extras --no-header --output-file requirements.lock requirements.in
-.venv\Scripts\python -m pip install --require-hashes -r requirements.lock
-.venv\Scripts\python -m pip check
-.venv\Scripts\python -m pip_audit -r requirements.lock
+py -3.12 -m venv .venv312
+.venv312\Scripts\python -m pip install --upgrade pip-tools==7.6.1 pip-audit==2.10.1
+.venv312\Scripts\python -m piptools compile --generate-hashes --strip-extras --no-header --output-file requirements.lock requirements.in
+.venv312\Scripts\python -m pip install --require-hashes -r requirements.lock
+.venv312\Scripts\python -m pip check
+.venv312\Scripts\python -m pip_audit -r requirements.lock
 ```
 
 唯讀端點：`GET /healthz`、`GET /readyz`、`GET /metrics`、`GET /api/v1/overview`、`GET /api/v1/incidents/{id}`。
