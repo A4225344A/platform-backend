@@ -22,6 +22,8 @@ from .models import (
     ApprovalList,
     ApprovalPrLink,
     ApprovalRead,
+    AskAnswer,
+    AskQuestion,
     AuditLogList,
     Counters,
     IncidentDetail,
@@ -720,6 +722,36 @@ async def incident_detail(incident_id: int, pool: Any = Depends(pool_from_reques
         timeline_stale=incident["status"] == "running" and (time.time() - incident["latest_at"].timestamp() > 300),
         agent_log_url=template.replace("%s", incident["service"]) if template else None,
     )
+
+
+AI_AGENT_URL = os.environ.get("AI_AGENT_URL", "http://ai-agent:8080")
+
+
+async def ask_incident_data(incident_id: int, question: str) -> dict[str, Any]:
+    """轉發到 ai-agent 的唯讀事故問答端點。engops-api 本身不呼叫 LLM——
+    這裡只做認證轉發與錯誤對應,LLM 呼叫與事故紀錄的存取都留在 ai-agent。"""
+    ask_token = os.environ.get("ASK_TOKEN")
+    if not ask_token:
+        raise HTTPException(status_code=503, detail="ASK_TOKEN 尚未設定")
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                f"{AI_AGENT_URL}/incidents/{incident_id}/ask",
+                json={"question": question},
+                headers={"Authorization": f"Bearer {ask_token}"},
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="ai-agent unreachable") from exc
+    if response.status_code == 404:
+        raise HTTPException(status_code=404, detail="事故不存在")
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail="ai-agent ask failed")
+    return response.json()
+
+
+@app.post("/api/v1/incidents/{incident_id}/ask", response_model=AskAnswer)
+async def ask_incident(incident_id: int, payload: AskQuestion) -> AskAnswer:
+    return AskAnswer(**await ask_incident_data(incident_id, payload.question))
 
 
 @app.post("/api/v1/approvals", status_code=201)
