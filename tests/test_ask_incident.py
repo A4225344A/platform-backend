@@ -29,8 +29,8 @@ class FakeAsyncClient:
     async def __aexit__(self, exc_type, exc, traceback):
         return False
 
-    async def post(self, url, json=None, headers=None):
-        FakeAsyncClient.last_call = (url, json, headers)
+    async def get(self, url, params=None, headers=None):
+        FakeAsyncClient.last_call = (url, params, headers)
         return FakeAsyncClient.next_response
 
 
@@ -53,9 +53,9 @@ def test_ask_incident_data_forwards_question_with_bearer_token(monkeypatch) -> N
         result = asyncio.run(ask_incident_data(7, "why did it restart?"))
 
     assert result == {"answer": "crash loop detected, restarted", "model": "judge", "cost_usd": 0.0001}
-    url, body, headers = FakeAsyncClient.last_call
+    url, params, headers = FakeAsyncClient.last_call
     assert url.endswith("/incidents/7/ask")
-    assert body == {"question": "why did it restart?"}
+    assert params == {"question": "why did it restart?"}
     assert headers["Authorization"] == "Bearer secret-token"
 
 

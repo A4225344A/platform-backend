@@ -23,7 +23,6 @@ from .models import (
     ApprovalPrLink,
     ApprovalRead,
     AskAnswer,
-    AskQuestion,
     AuditLogList,
     Counters,
     IncidentDetail,
@@ -735,9 +734,9 @@ async def ask_incident_data(incident_id: int, question: str) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="ASK_TOKEN 尚未設定")
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
+            response = await client.get(
                 f"{AI_AGENT_URL}/incidents/{incident_id}/ask",
-                json={"question": question},
+                params={"question": question},
                 headers={"Authorization": f"Bearer {ask_token}"},
             )
     except httpx.HTTPError as exc:
@@ -749,9 +748,11 @@ async def ask_incident_data(incident_id: int, question: str) -> dict[str, Any]:
     return response.json()
 
 
-@app.post("/api/v1/incidents/{incident_id}/ask", response_model=AskAnswer)
-async def ask_incident(incident_id: int, payload: AskQuestion) -> AskAnswer:
-    return AskAnswer(**await ask_incident_data(incident_id, payload.question))
+# 刻意用 GET 而非 POST:CloudFront 的 /api/* 只允許 GET/HEAD/OPTIONS(見主文件
+# §6.7/§12),POST 在 CloudFront edge 就會被原生 403 擋掉,連這支 API 都碰不到。
+@app.get("/api/v1/incidents/{incident_id}/ask", response_model=AskAnswer)
+async def ask_incident(incident_id: int, question: str = Query(..., min_length=1, max_length=500)) -> AskAnswer:
+    return AskAnswer(**await ask_incident_data(incident_id, question))
 
 
 @app.post("/api/v1/approvals", status_code=201)

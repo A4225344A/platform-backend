@@ -125,10 +125,6 @@ class TimelineItem(BaseModel):
     detail: Any
 
 
-class AskQuestion(BaseModel):
-    question: str = Field(min_length=1, max_length=500)
-
-
 class AskAnswer(BaseModel):
     answer: str
     model: str
