@@ -8,8 +8,18 @@
 
 ```powershell
 py -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python -m pip install --require-hashes -r requirements.lock
 .venv\Scripts\python -m uvicorn app.main:app --reload
+```
+
+`requirements.lock` 是從 `requirements.in` 用 pip-tools 產生的雜湊鎖定檔;改依賴版本時改 `requirements.in`,再重新產生:
+
+```powershell
+.venv\Scripts\python -m pip install --upgrade pip-tools==7.6.1 pip-audit==2.10.1
+.venv\Scripts\python -m piptools compile --generate-hashes --strip-extras --no-header --output-file requirements.lock requirements.in
+.venv\Scripts\python -m pip install --require-hashes -r requirements.lock
+.venv\Scripts\python -m pip check
+.venv\Scripts\python -m pip_audit -r requirements.lock
 ```
 
 唯讀端點：`GET /healthz`、`GET /readyz`、`GET /metrics`、`GET /api/v1/overview`、`GET /api/v1/incidents/{id}`。

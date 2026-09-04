@@ -25,13 +25,22 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install dependencies
+      - name: Install tooling
+        run: python -m pip install --upgrade pip-tools==7.6.1 pip-audit==2.10.1
+
+      - name: Verify lock file is current
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m piptools compile --cache-dir .pip-tools-cache --generate-hashes --strip-extras --no-header --output-file requirements.lock requirements.in
+          git diff --exit-code requirements.lock
+
+      - name: Install locked dependencies
+        run: python -m pip install --require-hashes -r requirements.lock
 
       - name: Check dependency consistency
         run: python -m pip check
+
+      - name: Audit locked dependencies
+        run: python -m pip_audit --cache-dir .pip-audit-cache -r requirements.lock
 
       - name: Compile Python files
         run: python -m py_compile app/*.py
