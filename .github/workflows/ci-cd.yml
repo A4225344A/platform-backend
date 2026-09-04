@@ -29,10 +29,15 @@ jobs:
       - name: Install tooling
         run: python -m pip install --upgrade pip-tools==7.6.1 pip-audit==2.10.1
 
-      - name: Verify lock file is current
+      - name: Verify lock file pins are current
+        # 只比對「套件==版本」有沒有跟 requirements.in 對齊(抓忘記重新產生
+        # 這種真正的 drift),刻意不比對雜湊清單本身——已發布版本的 wheel
+        # 清單會被上游持續追加(同版本號、新雜湊),逐字比對雜湊會被這種
+        # 上游變動觸發假警報,而不是抓到真正的問題。
         run: |
-          python -m piptools compile --cache-dir .pip-tools-cache --generate-hashes --strip-extras --no-header --output-file requirements.lock requirements.in
-          git diff --exit-code requirements.lock
+          python -m piptools compile --cache-dir .pip-tools-cache --strip-extras --no-header --output-file /tmp/requirements.fresh.lock requirements.in
+          diff <(grep -E '^[A-Za-z0-9_.-]+==' requirements.lock | awk '{print $1}' | sort) \
+               <(grep -E '^[A-Za-z0-9_.-]+==' /tmp/requirements.fresh.lock | awk '{print $1}' | sort)
 
       - name: Install locked dependencies
         run: python -m pip install --require-hashes -r requirements.lock
