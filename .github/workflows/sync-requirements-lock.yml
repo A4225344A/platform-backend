@@ -1,0 +1,41 @@
+name: Sync requirements.lock
+
+# 手動觸發:在跟 Dockerfile/CI 完全一致的 Linux + Python 3.12 環境重新產生
+# requirements.lock,並自動 commit 回來。本機是 Windows,pip-compile 會連
+# 帶解析出 Windows 專屬依賴(colorama/tzdata)、漏掉 Linux 專屬依賴
+# (uvloop),兩邊環境不同天生就會產生不同的鎖定檔——改 requirements.in
+# (升級/新增依賴)之後,跑這個 workflow 取代在本機手動重新產生。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Regenerate requirements.lock
+        run: |
+          python -m pip install --upgrade pip-tools==7.6.1
+          python -m piptools compile --generate-hashes --strip-extras --no-header --output-file requirements.lock requirements.in
+
+      - name: Commit and push if changed
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- requirements.lock; then
+            echo "requirements.lock 沒有變化,跳過"
+            exit 0
+          fi
+          git add requirements.lock
+          git commit -m "chore: sync requirements.lock with Linux/Python 3.12 resolution"
+          git push

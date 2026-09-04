@@ -12,15 +12,18 @@ py -m venv .venv
 .venv\Scripts\python -m uvicorn app.main:app --reload
 ```
 
-`requirements.lock` 是從 `requirements.in` 用 pip-tools 產生的雜湊鎖定檔;改依賴版本時改 `requirements.in`,再重新產生。**務必用 Python 3.12 產生**(跟 `Dockerfile`/CI 的 `python-version: "3.12"` 一致)——曾經誤用本機裝的 Python 3.14 產生過一次,解析出的傳遞依賴（`typing-extensions` 的 `via` 清單)跟 3.12 環境不同,導致 CI 的 `git diff --exit-code requirements.lock` 判定「lock 檔不是最新」而失敗。用錯 Python 版本產生的 lock 檔本機測試會全過,只有在 CI 重新解析比對時才會爆炸,不容易在本機發現:
+`requirements.lock` 是從 `requirements.in` 用 pip-tools 產生的雜湊鎖定檔;改依賴版本時改 `requirements.in`。
+
+**不要在本機(尤其是 Windows)重新產生這個檔案。** `Dockerfile`/CI 跑在 Linux + Python 3.12,pip-compile 是「在執行它的那台機器上」解析依賴——Windows 上會多解析出 Windows 專屬套件(`colorama`、`tzdata`),漏掉 Linux 專屬的 `uvloop`,產生出的鎖定檔在本機測試全過,只有 CI 重新解析比對時才會炸,而且炸的方式很難聯想到「作業系統不同」。
+
+改依賴後,推上去,再手動觸發 `.github/workflows/sync-requirements-lock.yml`(Actions 分頁 → Sync requirements.lock → Run workflow)——它在跟 `Dockerfile` 完全一致的 Linux + Python 3.12 環境重新產生並自動 commit 回來。
 
 ```powershell
-py -3.12 -m venv .venv312
-.venv312\Scripts\python -m pip install --upgrade pip-tools==7.6.1 pip-audit==2.10.1
-.venv312\Scripts\python -m piptools compile --generate-hashes --strip-extras --no-header --output-file requirements.lock requirements.in
-.venv312\Scripts\python -m pip install --require-hashes -r requirements.lock
-.venv312\Scripts\python -m pip check
-.venv312\Scripts\python -m pip_audit -r requirements.lock
+py -m venv .venv
+.venv\Scripts\python -m pip install --require-hashes -r requirements.lock
+.venv\Scripts\python -m pip check
+.venv\Scripts\python -m pip install pip-audit==2.10.1
+.venv\Scripts\python -m pip_audit -r requirements.lock
 ```
 
 唯讀端點：`GET /healthz`、`GET /readyz`、`GET /metrics`、`GET /api/v1/overview`、`GET /api/v1/incidents/{id}`。
