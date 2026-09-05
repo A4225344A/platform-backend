@@ -31,6 +31,7 @@ from .models import (
     ScorecardLatest,
     SearchResults,
     SecretRotationAuditCreate,
+    ServiceCatalogList,
     AuditLogRead,
 )
 from .validation import validate_action
@@ -262,18 +263,23 @@ async def overview_data(pool: Any, window_hours: int = 24) -> dict[str, Any]:
         )
         counters_row = await cursor.fetchone()
         cursor = await connection.execute(
-            """SELECT id, kind, service, action,
-                 greatest(0, extract(epoch FROM (now()-requested_at)))::int AS waiting_seconds,
-                 CASE WHEN kind='policy_change' THEN '/approvals'
-                      ELSE '/incidents/' || incident_id END AS href
-               FROM approvals WHERE status='pending' AND expires_at >= now()
-               ORDER BY requested_at"""
+            """SELECT ap.id, ap.kind, ap.service, ap.action,
+                 greatest(0, extract(epoch FROM (now()-ap.requested_at)))::int AS waiting_seconds,
+                 CASE WHEN ap.kind='policy_change' THEN '/approvals'
+                      ELSE '/incidents/' || ap.incident_id END AS href,
+                 c.owner_team, c.owner_email
+               FROM approvals ap
+               LEFT JOIN service_catalog c ON c.service = ap.service
+               WHERE ap.status='pending' AND ap.expires_at >= now()
+               ORDER BY ap.requested_at"""
         )
         approval_needs = await cursor.fetchall()
         cursor = await connection.execute(
             """SELECT i.id, i.service, i.status, i.alertname,
-                 greatest(0, extract(epoch FROM (now()-COALESCE(i.started_at,i.created_at))))::int AS waiting_seconds
+                 greatest(0, extract(epoch FROM (now()-COALESCE(i.started_at,i.created_at))))::int AS waiting_seconds,
+                 c.owner_team, c.owner_email
                FROM incidents i
+               LEFT JOIN service_catalog c ON c.service = i.service
                WHERE i.status='running' AND now()-COALESCE(i.started_at,i.created_at) > interval '5 minutes'
                ORDER BY i.created_at DESC"""
         )
@@ -294,7 +300,8 @@ async def overview_data(pool: Any, window_hours: int = 24) -> dict[str, Any]:
     needs = [NeedYou(**row) for row in approval_needs]
     needs.extend(
         NeedYou(id=row["id"], kind="timeline_stale", service=row["service"], action=None,
-                waiting_seconds=row["waiting_seconds"], href=f"/incidents/{row['id']}")
+                waiting_seconds=row["waiting_seconds"], href=f"/incidents/{row['id']}",
+                owner_team=row["owner_team"], owner_email=row["owner_email"])
         for row in stale_incidents
     )
     needs.extend(
@@ -356,6 +363,30 @@ async def search(
     pool: Any = Depends(pool_from_request),
 ) -> SearchResults:
     return SearchResults(**await search_data(q, pool))
+
+
+async def service_catalog_data(pool: Any) -> dict[str, Any]:
+    async with pool.connection() as connection:
+        cursor = await connection.execute(
+            """SELECT service, display_name, owner_team, owner_email, escalation_email,
+                 tier, auto_remediate, runbook_url, last_deploy_at,
+                 log_query_url_template, depends_on
+               FROM service_catalog
+               ORDER BY service"""
+        )
+        rows = await cursor.fetchall()
+    services = []
+    for row in rows:
+        entry = dict(row)
+        template = entry.pop("log_query_url_template")
+        entry["log_url"] = template.replace("%s", entry["service"]) if template else None
+        services.append(entry)
+    return {"services": services}
+
+
+@app.get("/api/v1/service-catalog", response_model=ServiceCatalogList)
+async def service_catalog(pool: Any = Depends(pool_from_request)) -> ServiceCatalogList:
+    return ServiceCatalogList(**await service_catalog_data(pool))
 
 
 async def accuracy_data(service: str, pool: Any) -> dict[str, Any]:
@@ -730,14 +761,14 @@ async def list_audit_log(
     return AuditLogList(**await audit_log_list_data(pool, limit, verb))
 
 
-@app.get("/api/v1/incidents/{incident_id}", response_model=IncidentDetail)
-async def incident_detail(incident_id: int, pool: Any = Depends(pool_from_request)) -> IncidentDetail:
+async def incident_detail_data(incident_id: int, pool: Any) -> dict[str, Any]:
     async with pool.connection() as connection:
         cursor = await connection.execute(
             """SELECT i.id, i.service, COALESCE(i.started_at,i.created_at) AS started_at,
                  COALESCE((SELECT max(at) FROM incident_steps WHERE incident_id=i.id),
                           i.started_at, i.created_at) AS latest_at,
-                 i.status, c.log_query_url_template
+                 i.status, c.log_query_url_template,
+                 c.owner_team, c.owner_email, c.escalation_email
                FROM incidents i LEFT JOIN service_catalog c ON c.service=i.service WHERE i.id=%s""",
             (incident_id,),
         )
@@ -750,12 +781,20 @@ async def incident_detail(incident_id: int, pool: Any = Depends(pool_from_reques
         )
         timeline = await cursor.fetchall()
     template = incident["log_query_url_template"]
-    return IncidentDetail(
-        id=incident["id"], service=incident["service"], started_at=incident["started_at"],
-        timeline=timeline,
-        timeline_stale=incident["status"] == "running" and (time.time() - incident["latest_at"].timestamp() > 300),
-        agent_log_url=template.replace("%s", incident["service"]) if template else None,
-    )
+    return {
+        "id": incident["id"], "service": incident["service"], "started_at": incident["started_at"],
+        "timeline": timeline,
+        "timeline_stale": incident["status"] == "running" and (time.time() - incident["latest_at"].timestamp() > 300),
+        "agent_log_url": template.replace("%s", incident["service"]) if template else None,
+        "owner_team": incident["owner_team"],
+        "owner_email": incident["owner_email"],
+        "escalation_email": incident["escalation_email"],
+    }
+
+
+@app.get("/api/v1/incidents/{incident_id}", response_model=IncidentDetail)
+async def incident_detail(incident_id: int, pool: Any = Depends(pool_from_request)) -> IncidentDetail:
+    return IncidentDetail(**await incident_detail_data(incident_id, pool))
 
 
 AI_AGENT_URL = os.environ.get("AI_AGENT_URL", "http://ai-agent:8080")

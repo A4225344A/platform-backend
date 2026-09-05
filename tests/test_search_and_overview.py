@@ -147,6 +147,62 @@ def test_overview_data_respects_custom_window_hours(monkeypatch) -> None:
     assert catalog_gaps_params == (6,)
 
 
+def test_overview_data_needs_you_carries_owner_from_service_catalog_join(monkeypatch) -> None:
+    monkeypatch.delenv("PROM_URL", raising=False)
+    connection = FakeConnection(
+        [
+            FakeCursor(
+                row={
+                    "alerts": 0,
+                    "ai_diagnosed": 0,
+                    "auto_remediated": 0,
+                    "notify_only": 0,
+                    "verified": 0,
+                    "verify_failed": 0,
+                    "skipped_cooldown": 0,
+                }
+            ),
+            FakeCursor(
+                rows=[
+                    {
+                        "id": 41,
+                        "kind": "remediation",
+                        "service": "payments-api",
+                        "action": "rollback",
+                        "waiting_seconds": 720,
+                        "href": "/incidents/922",
+                        "owner_team": "payments-core",
+                        "owner_email": "payments-oncall@example.com",
+                    }
+                ]
+            ),
+            FakeCursor(
+                rows=[
+                    {
+                        "id": 922,
+                        "service": "auth-api",
+                        "status": "running",
+                        "alertname": "PodCrashLooping",
+                        "waiting_seconds": 420,
+                        "owner_team": "identity-team",
+                        "owner_email": "identity-oncall@example.com",
+                    }
+                ]
+            ),
+            FakeCursor(rows=[]),
+            FakeCursor(rows=[]),
+        ]
+    )
+
+    result = asyncio.run(overview_data(FakePool(connection)))
+
+    needs_by_kind = {need.kind: need for need in result["needs_you"]}
+    assert needs_by_kind["remediation"].owner_team == "payments-core"
+    assert needs_by_kind["remediation"].owner_email == "payments-oncall@example.com"
+    assert needs_by_kind["timeline_stale"].owner_team == "identity-team"
+    assert needs_by_kind["timeline_stale"].owner_email == "identity-oncall@example.com"
+
+
 def test_accuracy_data_computes_remediation_rate() -> None:
     connection = FakeConnection(
         [

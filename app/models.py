@@ -146,6 +146,9 @@ class IncidentDetail(BaseModel):
     timeline: list[TimelineItem]
     timeline_stale: bool
     agent_log_url: str | None = None
+    owner_team: str | None = None
+    owner_email: str | None = None
+    escalation_email: str | None = None
 
 
 class Counters(BaseModel):
@@ -167,6 +170,8 @@ class NeedYou(BaseModel):
     action: str | None
     waiting_seconds: int | None
     href: str | None
+    owner_team: str | None = None
+    owner_email: str | None = None
 
 
 class Overview(BaseModel):
@@ -175,6 +180,24 @@ class Overview(BaseModel):
     counters: Counters
     needs_you: list[NeedYou]
     recent: list[dict[str, Any]]
+
+
+class ServiceCatalogEntry(BaseModel):
+    service: str
+    display_name: str | None
+    owner_team: str | None
+    owner_email: str | None
+    escalation_email: str | None
+    tier: int | None
+    auto_remediate: bool | None
+    runbook_url: str | None
+    last_deploy_at: datetime | None
+    depends_on: list[str] | None
+    log_url: str | None
+
+
+class ServiceCatalogList(BaseModel):
+    services: list[ServiceCatalogEntry]
 
 
 class SearchServiceResult(BaseModel):
